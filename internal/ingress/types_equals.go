@@ -104,7 +104,7 @@ func (c1 *Configuration) Equal(c2 *Configuration) bool {
 		}
 	}
 
-	if c1.ConfigurationChecksum != c2.ConfigurationChecksum {
+	if c1.BackendConfigChecksum != c2.BackendConfigChecksum {
 		return false
 	}
 
@@ -503,6 +503,9 @@ func (s1 *SSLCert) Equal(s2 *SSLCert) bool {
 		return false
 	}
 	if s1.FullChainPemFileName != s2.FullChainPemFileName {
+		return false
+	}
+	if s1.PemCertKey != s2.PemCertKey {
 		return false
 	}
 

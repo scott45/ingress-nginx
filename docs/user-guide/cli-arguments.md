@@ -15,7 +15,8 @@ They are set in the container spec of the `nginx-ingress-controller` Deployment 
 | --default-server-port int         | Port to use for exposing the default server (catch-all). (default 8181) |
 | --default-ssl-certificate string  | Secret containing a SSL certificate to be used by the default HTTPS server (catch-all). Takes the form "namespace/name". |
 | --election-id string              | Election id to use for Ingress status updates. (default "ingress-controller-leader") |
-| --enable-dynamic-configuration    | Dynamically refresh backends on topology changes instead of reloading NGINX. Feature backed by OpenResty Lua libraries. |
+| --enable-dynamic-configuration    | Dynamically refresh backends on topology changes instead of reloading NGINX. Feature backed by OpenResty Lua libraries. (enabled by default) |
+| --enable-dynamic-certificates    | Dynamically serves certificates instead of reloading NGINX when certificates are created, updated, or deleted. Currently does not support OCSP stapling, so --enable-ssl-chain-completion must be turned off. Assuming the certificate is generated with a 2048 bit RSA key/cert pair, this feature can store roughly 5000 certificates. This is an experiemental feature that currently is not ready for production use. Feature backed by OpenResty Lua libraries. (disabled by default) |
 | --enable-ssl-chain-completion     | Autocomplete SSL certificate chains with missing intermediate CA certificates. A valid certificate chain is required to enable OCSP stapling. Certificates uploaded to Kubernetes must have the "Authority Information Access" X.509 v3 extension for this to succeed. (default true) |
 | --enable-ssl-passthrough          | Enable SSL Passthrough. |
 | --force-namespace-isolation       | Force namespace isolation. Prevents Ingress objects from referencing Secrets and ConfigMaps located in a different namespace than their own. May be used together with watch-namespace. |
@@ -36,7 +37,7 @@ They are set in the container spec of the `nginx-ingress-controller` Deployment 
 | --ssl-passthrough-proxy-port int  | Port to use internally for SSL Passthrough. (default 442) |
 | --status-port int                 | Port to use for exposing NGINX status pages. (default 18080) |
 | --stderrthreshold severity        | logs at or above this threshold go to stderr (default 2) |
-| --sync-period duration            | Period at which the controller forces the repopulation of its local object stores. (default 10m0s) |
+| --sync-period duration            | Period at which the controller forces the repopulation of its local object stores. (default is 0) |
 | --sync-rate-limit float32         | Define the sync frequency upper limit (default 0.3) |
 | --tcp-services-configmap string   | Name of the ConfigMap containing the definition of the TCP services to expose. The key in the map indicates the external port to be used. The value is a reference to a Service in the form "namespace/name:port", where "port" can either be a port number or name. TCP ports 80 and 443 are reserved by the controller for servicing HTTP traffic. |
 | --udp-services-configmap string   | Name of the ConfigMap containing the definition of the UDP services to expose. The key in the map indicates the external port to be used. The value is a reference to a Service in the form "namespace/name:port", where "port" can either be a port name or number.

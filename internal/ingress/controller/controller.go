@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+	"github.com/mitchellh/hashstructure"
 
 	apiv1 "k8s.io/api/core/v1"
 	extensions "k8s.io/api/extensions/v1beta1"
@@ -95,6 +96,8 @@ type Configuration struct {
 	DynamicConfigurationEnabled bool
 
 	DisableLua bool
+
+	DynamicCertificatesEnabled bool
 }
 
 // GetPublishService returns the Service used to set the load-balancer status of Ingresses.
@@ -148,38 +151,43 @@ func (n *NGINXController) syncIngress(interface{}) error {
 		}
 	}
 
-	pcfg := ingress.Configuration{
-		Backends:            upstreams,
-		Servers:             servers,
-		TCPEndpoints:        n.getStreamServices(n.cfg.TCPConfigMapName, apiv1.ProtocolTCP),
-		UDPEndpoints:        n.getStreamServices(n.cfg.UDPConfigMapName, apiv1.ProtocolUDP),
-		PassthroughBackends: passUpstreams,
-
-		ConfigurationChecksum: n.store.GetBackendConfiguration().Checksum,
+	pcfg := &ingress.Configuration{
+		Backends:              upstreams,
+		Servers:               servers,
+		TCPEndpoints:          n.getStreamServices(n.cfg.TCPConfigMapName, apiv1.ProtocolTCP),
+		UDPEndpoints:          n.getStreamServices(n.cfg.UDPConfigMapName, apiv1.ProtocolUDP),
+		PassthroughBackends:   passUpstreams,
+		BackendConfigChecksum: n.store.GetBackendConfiguration().Checksum,
 	}
 
-	if n.runningConfig.Equal(&pcfg) {
+	if n.runningConfig.Equal(pcfg) {
 		glog.V(3).Infof("No configuration change detected, skipping backend reload.")
 		return nil
 	}
 
-	if n.cfg.DynamicConfigurationEnabled && n.IsDynamicConfigurationEnough(&pcfg) {
+	if n.cfg.DynamicConfigurationEnabled && n.IsDynamicConfigurationEnough(pcfg) {
 		glog.Infof("Changes handled by the dynamic configuration, skipping backend reload.")
 	} else {
 		glog.Infof("Configuration changes detected, backend reload required.")
 
-		err := n.OnUpdate(pcfg)
+		hash, _ := hashstructure.Hash(pcfg, &hashstructure.HashOptions{
+			TagName: "json",
+		})
+
+		pcfg.ConfigurationChecksum = fmt.Sprintf("%v", hash)
+
+		err := n.OnUpdate(*pcfg)
 		if err != nil {
-			IncReloadErrorCount()
-			ConfigSuccess(false)
+			n.metricCollector.IncReloadErrorCount()
+			n.metricCollector.ConfigSuccess(hash, false)
 			glog.Errorf("Unexpected failure reloading the backend:\n%v", err)
 			return err
 		}
 
 		glog.Infof("Backend successfully reloaded.")
-		ConfigSuccess(true)
-		IncReloadCount()
-		setSSLExpireTime(servers)
+		n.metricCollector.ConfigSuccess(hash, true)
+		n.metricCollector.IncReloadCount()
+		n.metricCollector.SetSSLExpireTime(servers)
 	}
 
 	if n.cfg.DynamicConfigurationEnabled {
@@ -191,7 +199,7 @@ func (n *NGINXController) syncIngress(interface{}) error {
 				// it takes time for NGINX to start listening on the configured ports
 				time.Sleep(1 * time.Second)
 			}
-			err := configureDynamically(&pcfg, n.cfg.ListenPorts.Status)
+			err := configureDynamically(pcfg, n.cfg.ListenPorts.Status, n.cfg.DynamicCertificatesEnabled)
 			if err == nil {
 				glog.Infof("Dynamic reconfiguration succeeded.")
 			} else {
@@ -200,7 +208,11 @@ func (n *NGINXController) syncIngress(interface{}) error {
 		}(isFirstSync)
 	}
 
-	n.runningConfig = &pcfg
+	ri := getRemovedIngresses(n.runningConfig, pcfg)
+	re := getRemovedHosts(n.runningConfig, pcfg)
+	n.metricCollector.RemoveMetrics(ri, re)
+
+	n.runningConfig = pcfg
 
 	return nil
 }
@@ -327,6 +339,11 @@ func (n *NGINXController) getStreamServices(configmapName string, proto apiv1.Pr
 		})
 	}
 
+	// Keep upstream order sorted to reduce unnecessary nginx config reloads.
+	sort.SliceStable(svcs, func(i, j int) bool {
+		return svcs[i].Port < svcs[j].Port
+	})
+
 	return svcs
 }
 
@@ -402,6 +419,11 @@ func (n *NGINXController) getBackendServers(ingresses []*extensions.Ingress) ([]
 					server.Hostname, ingKey)
 			}
 
+			if rule.HTTP == nil {
+				glog.V(3).Infof("Ingress %q does not contain any HTTP rule, using default backend", ingKey)
+				continue
+			}
+
 			for _, path := range rule.HTTP.Paths {
 				upsName := fmt.Sprintf("%v-%v-%v",
 					ing.Namespace,
@@ -454,6 +476,7 @@ func (n *NGINXController) getBackendServers(ingresses []*extensions.Ingress) ([]
 						loc.LuaRestyWAF = anns.LuaRestyWAF
 						loc.InfluxDB = anns.InfluxDB
 						loc.DefaultBackend = anns.DefaultBackend
+						loc.BackendProtocol = anns.BackendProtocol
 
 						if loc.Redirect.FromToWWW {
 							server.RedirectFromToWWW = true
@@ -494,6 +517,7 @@ func (n *NGINXController) getBackendServers(ingresses []*extensions.Ingress) ([]
 						LuaRestyWAF:          anns.LuaRestyWAF,
 						InfluxDB:             anns.InfluxDB,
 						DefaultBackend:       anns.DefaultBackend,
+						BackendProtocol:      anns.BackendProtocol,
 					}
 
 					if loc.Redirect.FromToWWW {
@@ -749,7 +773,7 @@ func (n *NGINXController) getServiceClusterEndpoint(svcKey string, backend *exte
 			}
 		}
 		if port == -1 {
-			return endpoint, fmt.Errorf("Service %q does not have a port named %q", svc.Name, backend.ServicePort)
+			return endpoint, fmt.Errorf("service %q does not have a port named %q", svc.Name, backend.ServicePort)
 		}
 		endpoint.Port = fmt.Sprintf("%d", port)
 	} else {
@@ -1031,7 +1055,9 @@ func (n *NGINXController) createServers(data []*extensions.Ingress,
 			secrKey := fmt.Sprintf("%v/%v", ing.Namespace, tlsSecretName)
 			cert, err := n.store.GetLocalSSLCert(secrKey)
 			if err != nil {
-				glog.Warningf("Error getting SSL certificate %q: %v", secrKey, err)
+				glog.Warningf("Error getting SSL certificate %q: %v. Using default certificate", secrKey, err)
+				servers[host].SSLCert.PemFileName = defaultPemFileName
+				servers[host].SSLCert.PemSHA = defaultPemSHA
 				continue
 			}
 
@@ -1045,8 +1071,17 @@ func (n *NGINXController) createServers(data []*extensions.Ingress,
 				if err != nil {
 					glog.Warningf("SSL certificate %q does not contain a Common Name or Subject Alternative Name for server %q: %v",
 						secrKey, host, err)
+					glog.Warningf("Using default certificate")
+					servers[host].SSLCert.PemFileName = defaultPemFileName
+					servers[host].SSLCert.PemSHA = defaultPemSHA
 					continue
 				}
+			}
+
+			if n.cfg.DynamicCertificatesEnabled {
+				// useless placeholders: just to shut up NGINX configuration loader errors:
+				cert.PemFileName = defaultPemFileName
+				cert.PemSHA = defaultPemSHA
 			}
 
 			servers[host].SSLCert = *cert
@@ -1085,6 +1120,12 @@ func extractTLSSecretName(host string, ing *extensions.Ingress,
 
 	// no TLS host matching host name, try each TLS host for matching SAN or CN
 	for _, tls := range ing.Spec.TLS {
+
+		if tls.SecretName == "" {
+			// There's no secretName specified, so it will never be available
+			continue
+		}
+
 		secrKey := fmt.Sprintf("%v/%v", ing.Namespace, tls.SecretName)
 
 		cert, err := getLocalSSLCert(secrKey)
@@ -1106,4 +1147,58 @@ func extractTLSSecretName(host string, ing *extensions.Ingress,
 	}
 
 	return ""
+}
+
+// getRemovedHosts returns a list of the hostsnames
+// that are not associated anymore to the NGINX configuration.
+func getRemovedHosts(rucfg, newcfg *ingress.Configuration) []string {
+	old := sets.NewString()
+	new := sets.NewString()
+
+	for _, s := range rucfg.Servers {
+		if !old.Has(s.Hostname) {
+			old.Insert(s.Hostname)
+		}
+	}
+
+	for _, s := range newcfg.Servers {
+		if !new.Has(s.Hostname) {
+			new.Insert(s.Hostname)
+		}
+	}
+
+	return old.Difference(new).List()
+}
+
+func getRemovedIngresses(rucfg, newcfg *ingress.Configuration) []string {
+	oldIngresses := sets.NewString()
+	newIngresses := sets.NewString()
+
+	for _, server := range rucfg.Servers {
+		for _, location := range server.Locations {
+			if location.Ingress == nil {
+				continue
+			}
+
+			ingKey := k8s.MetaNamespaceKey(location.Ingress)
+			if !oldIngresses.Has(ingKey) {
+				oldIngresses.Insert(ingKey)
+			}
+		}
+	}
+
+	for _, server := range newcfg.Servers {
+		for _, location := range server.Locations {
+			if location.Ingress == nil {
+				continue
+			}
+
+			ingKey := k8s.MetaNamespaceKey(location.Ingress)
+			if !newIngresses.Has(ingKey) {
+				newIngresses.Insert(ingKey)
+			}
+		}
+	}
+
+	return oldIngresses.Difference(newIngresses).List()
 }

@@ -212,6 +212,8 @@ type k8sStore struct {
 	mu *sync.Mutex
 
 	defaultSSLCertificate string
+
+	isDynamicCertificatesEnabled bool
 }
 
 // New creates a new object store to be used in the ingress controller
@@ -220,19 +222,21 @@ func New(checkOCSP bool,
 	resyncPeriod time.Duration,
 	client clientset.Interface,
 	fs file.Filesystem,
-	updateCh *channels.RingChannel) Storer {
+	updateCh *channels.RingChannel,
+	isDynamicCertificatesEnabled bool) Storer {
 
 	store := &k8sStore{
-		isOCSPCheckEnabled:    checkOCSP,
-		informers:             &Informer{},
-		listers:               &Lister{},
-		sslStore:              NewSSLCertTracker(),
-		filesystem:            fs,
-		updateCh:              updateCh,
-		backendConfig:         ngx_config.NewDefault(),
-		mu:                    &sync.Mutex{},
-		secretIngressMap:      NewObjectRefMap(),
-		defaultSSLCertificate: defaultSSLCertificate,
+		isOCSPCheckEnabled:           checkOCSP,
+		informers:                    &Informer{},
+		listers:                      &Lister{},
+		sslStore:                     NewSSLCertTracker(),
+		filesystem:                   fs,
+		updateCh:                     updateCh,
+		backendConfig:                ngx_config.NewDefault(),
+		mu:                           &sync.Mutex{},
+		secretIngressMap:             NewObjectRefMap(),
+		defaultSSLCertificate:        defaultSSLCertificate,
+		isDynamicCertificatesEnabled: isDynamicCertificatesEnabled,
 	}
 
 	eventBroadcaster := record.NewBroadcaster()
@@ -244,13 +248,15 @@ func New(checkOCSP bool,
 		Component: "nginx-ingress-controller",
 	})
 
-	// k8sStore fulfils resolver.Resolver interface
+	// k8sStore fulfills resolver.Resolver interface
 	store.annotations = annotations.NewAnnotationExtractor(store)
 
 	store.listers.IngressAnnotation.Store = cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
 
 	// create informers factory, enable and assign required informers
-	infFactory := informers.NewFilteredSharedInformerFactory(client, resyncPeriod, namespace, func(*metav1.ListOptions) {})
+	infFactory := informers.NewSharedInformerFactoryWithOptions(client, resyncPeriod,
+		informers.WithNamespace(namespace),
+		informers.WithTweakListOptions(func(*metav1.ListOptions) {}))
 
 	store.informers.Ingress = infFactory.Extensions().V1beta1().Ingresses().Informer()
 	store.listers.Ingress.Store = store.informers.Ingress.GetStore()
@@ -521,8 +527,8 @@ func New(checkOCSP bool,
 	if err != nil {
 		glog.Warningf("Unexpected error reading configuration configmap: %v", err)
 	}
-	store.setConfig(cm)
 
+	store.setConfig(cm)
 	return store
 }
 
@@ -667,7 +673,12 @@ func (s k8sStore) ListIngresses() []*extensions.Ingress {
 
 // GetIngressAnnotations returns the parsed annotations of an Ingress matching key.
 func (s k8sStore) GetIngressAnnotations(key string) (*annotations.Ingress, error) {
-	return s.listers.IngressAnnotation.ByKey(key)
+	ia, err := s.listers.IngressAnnotation.ByKey(key)
+	if err != nil {
+		return &annotations.Ingress{}, err
+	}
+
+	return ia, nil
 }
 
 // GetLocalSSLCert returns the local copy of a SSLCert
@@ -703,6 +714,34 @@ func (s k8sStore) GetAuthCertificate(name string) (*resolver.AuthSSLCert, error)
 	}, nil
 }
 
+func (s k8sStore) writeSSLSessionTicketKey(cmap *corev1.ConfigMap, fileName string) {
+	ticketString := ngx_template.ReadConfig(cmap.Data).SSLSessionTicketKey
+	s.backendConfig.SSLSessionTicketKey = ""
+
+	if ticketString != "" {
+		ticketBytes := base64.StdEncoding.WithPadding(base64.StdPadding).DecodedLen(len(ticketString))
+
+		// 81 used instead of 80 because of padding
+		if !(ticketBytes == 48 || ticketBytes == 81) {
+			glog.Warningf("ssl-session-ticket-key must contain either 48 or 80 bytes")
+		}
+
+		decodedTicket, err := base64.StdEncoding.DecodeString(ticketString)
+		if err != nil {
+			glog.Errorf("unexpected error decoding ssl-session-ticket-key: %v", err)
+			return
+		}
+
+		err = ioutil.WriteFile(fileName, decodedTicket, file.ReadWriteByUser)
+		if err != nil {
+			glog.Errorf("unexpected error writing ssl-session-ticket-key to %s: %v", fileName, err)
+			return
+		}
+
+		s.backendConfig.SSLSessionTicketKey = ticketString
+	}
+}
+
 // GetDefaultBackend returns the default backend
 func (s k8sStore) GetDefaultBackend() defaults.Backend {
 	return s.backendConfig.Backend
@@ -714,16 +753,7 @@ func (s k8sStore) GetBackendConfiguration() ngx_config.Configuration {
 
 func (s *k8sStore) setConfig(cmap *corev1.ConfigMap) {
 	s.backendConfig = ngx_template.ReadConfig(cmap.Data)
-
-	// TODO: this should not be done here
-	if s.backendConfig.SSLSessionTicketKey != "" {
-		d, err := base64.StdEncoding.DecodeString(s.backendConfig.SSLSessionTicketKey)
-		if err != nil {
-			glog.Warningf("unexpected error decoding key ssl-session-ticket-key: %v", err)
-			s.backendConfig.SSLSessionTicketKey = ""
-		}
-		ioutil.WriteFile("/etc/nginx/tickets.key", d, file.ReadWriteByUser)
-	}
+	s.writeSSLSessionTicketKey(cmap, "/etc/nginx/tickets.key")
 }
 
 // Run initiates the synchronization of the informers and the initial

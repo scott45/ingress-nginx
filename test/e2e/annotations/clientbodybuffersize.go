@@ -28,7 +28,7 @@ import (
 )
 
 var _ = framework.IngressNginxDescribe("Annotations - Client-Body-Buffer-Size", func() {
-	f := framework.NewDefaultFramework("proxy")
+	f := framework.NewDefaultFramework("clientbodybuffersize")
 
 	BeforeEach(func() {
 		err := f.NewEchoDeploymentWithReplicas(2)
