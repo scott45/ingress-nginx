@@ -80,7 +80,7 @@ type Backend struct {
 
 	// Sets the replacement text that should be changed in the "Location" and "Refresh" header fields of a proxied server response.
 	// http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_redirect
-	// Default: ""
+	// Default: off
 	ProxyRedirectTo string `json:"proxy-redirect-to"`
 
 	// Enables or disables buffering of a client request body.
@@ -107,23 +107,19 @@ type Backend struct {
 	// Default: false
 	UsePortInRedirects bool `json:"use-port-in-redirects"`
 
-	// Number of unsuccessful attempts to communicate with the server that should happen in the
-	// duration set by the fail_timeout parameter to consider the server unavailable
-	// http://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream
-	// Default: 0, ie use platform liveness probe
-	UpstreamMaxFails int `json:"upstream-max-fails"`
-
-	// Time during which the specified number of unsuccessful attempts to communicate with
-	// the server should happen to consider the server unavailable
-	// http://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream
-	// Default: 0, ie use platform liveness probe
-	UpstreamFailTimeout int `json:"upstream-fail-timeout"`
-
 	// Enable stickiness by client-server mapping based on a NGINX variable, text or a combination of both.
 	// A consistent hashing method will be used which ensures only a few keys would be remapped to different
 	// servers on upstream group changes
 	// http://nginx.org/en/docs/http/ngx_http_upstream_module.html#hash
 	UpstreamHashBy string `json:"upstream-hash-by"`
+
+	// Consistent hashing subset flag.
+	// Default: false
+	UpstreamHashBySubset bool `json:"upstream-hash-by-subset"`
+
+	// Subset consistent hashing, subset size.
+	// Default 3
+	UpstreamHashBySubsetSize int `json:"upstream-hash-by-subset-size"`
 
 	// Let's us choose a load balancing algorithm per ingress
 	LoadBalancing string `json:"load-balance"`

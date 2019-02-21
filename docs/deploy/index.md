@@ -2,8 +2,7 @@
 
 ## Contents
 
-- [Generic Deployment](#generic-deployment)
-  - [Mandatory command](#mandatory-command)
+- [Prerequisite Generic Deployment Command](#prerequisite-generic-deployment-command)
   - [Provider Specific Steps](#provider-specific-steps)
     - [Docker for Mac](#docker-for-mac)
     - [minikube](#minikube)
@@ -15,11 +14,20 @@
   - [Detect installed version](#detect-installed-version)
 - [Using Helm](#using-helm)
 
-## Generic Deployment 
+## Prerequisite Generic Deployment Command
 
-The following resources are required for a generic deployment.
+The following **Mandatory Command** is required for all deployments.
 
-### Mandatory command
+!!! attention
+    The default configuration watches Ingress object from all the namespaces.
+    To change this behavior use the flag `--watch-namespace` to limit the scope to a particular namespace.
+
+!!! warning
+    If multiple Ingresses define different paths for the same host, the ingress controller will merge the definitions.
+    
+!!! attention
+    If you're using GKE you need to initialize your user as a cluster-admin with the following command: 
+    ```kubectl create clusterrolebinding cluster-admin-binding   --clusterrole cluster-admin   --user $(gcloud config get-value account)```
 
 ```console
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/mandatory.yaml
@@ -71,7 +79,7 @@ nginx-ingress-controller-fdcdcd6dd-vvpgs   1/1       Running   0          11s
 
 In AWS we use an Elastic Load Balancer (ELB) to expose the NGINX Ingress controller behind a Service of `Type=LoadBalancer`.
 Since Kubernetes v1.9.0 it is possible to use a classic load balancer (ELB) or network load balancer (NLB)
-Please check the [elastic load balancing AWS details page](https://aws.amazon.com/es/elasticloadbalancing/details/)
+Please check the [elastic load balancing AWS details page](https://aws.amazon.com/elasticloadbalancing/details/)
 
 ##### Elastic Load Balancer - ELB
 
@@ -150,7 +158,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/mast
 ```
 
 !!! tip
-    For extended notes regarding deployments on bare-metal, see [Bare-metal considerations](./baremetal/).
+    For extended notes regarding deployments on bare-metal, see [Bare-metal considerations](./baremetal.md).
 
 ### Verify installation
 

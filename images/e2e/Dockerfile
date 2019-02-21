@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM quay.io/kubernetes-ingress-controller/nginx-amd64:0.61
+FROM quay.io/kubernetes-ingress-controller/nginx-amd64:0.76
 
 RUN clean-install \
   g++ \
@@ -25,9 +25,9 @@ RUN clean-install \
   python \
   pkg-config
 
-ENV GOLANG_VERSION 1.11
+ENV GOLANG_VERSION 1.11.5
 ENV GO_ARCH        linux-amd64
-ENV GOLANG_SHA     b3fcf280ff86558e0559e185b601c9eade0fd24c900b4c63cd14d1d38613e499
+ENV GOLANG_SHA     ff54aafedff961eb94792487e827515da683d61a5f9482f668008832631e5d25
 
 RUN set -eux; \
   url="https://golang.org/dl/go${GOLANG_VERSION}.${GO_ARCH}.tar.gz"; \
@@ -61,3 +61,6 @@ RUN  luarocks install luacheck \
 
 RUN  go get github.com/onsi/ginkgo/ginkgo \
   && go get golang.org/x/lint/golint
+
+RUN  curl -Lo /usr/local/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/v1.13.3/bin/linux/amd64/kubectl \
+  && chmod +x /usr/local/bin/kubectl

@@ -20,16 +20,14 @@ WORKDIR  /etc/nginx
 
 RUN clean-install \
   diffutils \
-  valgrind \
-  dumb-init
+  libcap2-bin
 
-COPY . /
+COPY --chown=www-data:www-data . /
 
 # Fix permission during the build to avoid issues at runtime
 # with volumes (custom templates)
 RUN bash -eu -c ' \
   writeDirs=( \
-    /etc/nginx/template \
     /etc/ingress-controller/ssl \
     /etc/ingress-controller/auth \
     /var/log \
@@ -39,13 +37,21 @@ RUN bash -eu -c ' \
   for dir in "${writeDirs[@]}"; do \
     mkdir -p ${dir}; \
     chown -R www-data.www-data ${dir}; \
-  done' \
-  && chown www-data.www-data /etc/nginx/nginx.conf \
-  && chown www-data.www-data /etc/nginx/opentracing.json
+  done'
+
+RUN  setcap    cap_net_bind_service=+ep /nginx-ingress-controller \
+  && setcap -v cap_net_bind_service=+ep /nginx-ingress-controller
+
+RUN  setcap    cap_net_bind_service=+ep /usr/sbin/nginx \
+  && setcap -v cap_net_bind_service=+ep /usr/sbin/nginx
 
 # Create symlinks to redirect nginx logs to stdout and stderr docker log collector
 # This only works if nginx is started with CMD or ENTRYPOINT
 RUN ln -sf /dev/stdout /var/log/nginx/access.log
 RUN ln -sf /dev/stderr /var/log/nginx/error.log
+
+USER www-data
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 CMD ["/nginx-ingress-controller"]

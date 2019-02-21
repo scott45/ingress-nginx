@@ -24,20 +24,20 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	discovery "k8s.io/apimachinery/pkg/version"
 	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog"
 
 	"k8s.io/ingress-nginx/internal/file"
 	"k8s.io/ingress-nginx/internal/ingress/controller"
@@ -59,6 +59,8 @@ const (
 )
 
 func main() {
+	klog.InitFlags(nil)
+
 	rand.Seed(time.Now().UnixNano())
 
 	fmt.Println(version.String())
@@ -69,14 +71,14 @@ func main() {
 	}
 
 	if err != nil {
-		glog.Fatal(err)
+		klog.Fatal(err)
 	}
 
 	nginxVersion()
 
 	fs, err := file.NewLocalFS()
 	if err != nil {
-		glog.Fatal(err)
+		klog.Fatal(err)
 	}
 
 	kubeClient, err := createApiserverClient(conf.APIServerHost, conf.KubeConfigFile)
@@ -84,25 +86,26 @@ func main() {
 		handleFatalInitError(err)
 	}
 
-	defSvcNs, defSvcName, err := k8s.ParseNameNS(conf.DefaultService)
-	if err != nil {
-		glog.Fatal(err)
-	}
-
-	_, err = kubeClient.CoreV1().Services(defSvcNs).Get(defSvcName, metav1.GetOptions{})
-	if err != nil {
-		// TODO (antoineco): compare with error types from k8s.io/apimachinery/pkg/api/errors
-		if strings.Contains(err.Error(), "cannot get services in the namespace") {
-			glog.Fatalf("✖ The cluster seems to be running with a restrictive Authorization mode and the Ingress controller does not have the required permissions to operate normally.")
+	if len(conf.DefaultService) > 0 {
+		defSvcNs, defSvcName, err := k8s.ParseNameNS(conf.DefaultService)
+		if err != nil {
+			klog.Fatal(err)
 		}
-		glog.Fatalf("No service with name %v found: %v", conf.DefaultService, err)
+
+		_, err = kubeClient.CoreV1().Services(defSvcNs).Get(defSvcName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsUnauthorized(err) || errors.IsForbidden(err) {
+				klog.Fatal("✖ The cluster seems to be running with a restrictive Authorization mode and the Ingress controller does not have the required permissions to operate normally.")
+			}
+			klog.Fatalf("No service with name %v found: %v", conf.DefaultService, err)
+		}
+		klog.Infof("Validated %v as the default backend.", conf.DefaultService)
 	}
-	glog.Infof("Validated %v as the default backend.", conf.DefaultService)
 
 	if conf.Namespace != "" {
 		_, err = kubeClient.CoreV1().Namespaces().Get(conf.Namespace, metav1.GetOptions{})
 		if err != nil {
-			glog.Fatalf("No namespace with name %v found: %v", conf.Namespace, err)
+			klog.Fatalf("No namespace with name %v found: %v", conf.Namespace, err)
 		}
 	}
 
@@ -110,7 +113,7 @@ func main() {
 	defCert, defKey := ssl.GetFakeSSLCert()
 	c, err := ssl.AddOrUpdateCertAndKey(fakeCertificate, defCert, defKey, []byte{}, fs)
 	if err != nil {
-		glog.Fatalf("Error generating self-signed certificate: %v", err)
+		klog.Fatalf("Error generating self-signed certificate: %v", err)
 	}
 
 	conf.FakeCertificatePath = c.PemFileName
@@ -121,11 +124,17 @@ func main() {
 	reg := prometheus.NewRegistry()
 
 	reg.MustRegister(prometheus.NewGoCollector())
-	reg.MustRegister(prometheus.NewProcessCollector(os.Getpid(), ""))
+	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{
+		PidFn:        func() (int, error) { return os.Getpid(), nil },
+		ReportErrors: true,
+	}))
 
-	mc, err := metric.NewCollector(conf.ListenPorts.Status, reg)
-	if err != nil {
-		glog.Fatalf("Error creating prometheus collector:  %v", err)
+	mc := metric.NewDummyCollector()
+	if conf.EnableMetrics {
+		mc, err = metric.NewCollector(conf.MetricsPerHost, reg)
+		if err != nil {
+			klog.Fatalf("Error creating prometheus collector:  %v", err)
+		}
 	}
 	mc.Start()
 
@@ -155,18 +164,18 @@ func handleSigterm(ngx *controller.NGINXController, exit exiter) {
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM)
 	<-signalChan
-	glog.Infof("Received SIGTERM, shutting down")
+	klog.Info("Received SIGTERM, shutting down")
 
 	exitCode := 0
 	if err := ngx.Stop(); err != nil {
-		glog.Infof("Error during shutdown: %v", err)
+		klog.Infof("Error during shutdown: %v", err)
 		exitCode = 1
 	}
 
-	glog.Infof("Handled quit, awaiting Pod deletion")
+	klog.Info("Handled quit, awaiting Pod deletion")
 	time.Sleep(10 * time.Second)
 
-	glog.Infof("Exiting with %v", exitCode)
+	klog.Infof("Exiting with %v", exitCode)
 	exit(exitCode)
 }
 
@@ -175,7 +184,7 @@ func handleSigterm(ngx *controller.NGINXController, exit exiter) {
 // kubeConfig is the location of a kubeconfig file. If defined, the kubeconfig
 // file is loaded first, the URL of the API server read from the file is then
 // optionally overridden by the value of apiserverHost.
-// If neither apiserverHost nor kubeConfig are passed in, we assume the
+// If neither apiserverHost nor kubeConfig is passed in, we assume the
 // controller runs inside Kubernetes and fallback to the in-cluster config. If
 // the in-cluster config is missing or fails, we fallback to the default config.
 func createApiserverClient(apiserverHost, kubeConfig string) (*kubernetes.Clientset, error) {
@@ -188,7 +197,7 @@ func createApiserverClient(apiserverHost, kubeConfig string) (*kubernetes.Client
 	cfg.Burst = defaultBurst
 	cfg.ContentType = "application/vnd.kubernetes.protobuf"
 
-	glog.Infof("Creating API client for %s", cfg.Host)
+	klog.Infof("Creating API client for %s", cfg.Host)
 
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
@@ -208,7 +217,7 @@ func createApiserverClient(apiserverHost, kubeConfig string) (*kubernetes.Client
 
 	var lastErr error
 	retries := 0
-	glog.V(2).Info("Trying to discover Kubernetes version")
+	klog.V(2).Info("Trying to discover Kubernetes version")
 	err = wait.ExponentialBackoff(defaultRetry, func() (bool, error) {
 		v, err = client.Discovery().ServerVersion()
 
@@ -217,7 +226,7 @@ func createApiserverClient(apiserverHost, kubeConfig string) (*kubernetes.Client
 		}
 
 		lastErr = err
-		glog.V(2).Infof("Unexpected error discovering Kubernetes version (attempt %v): %v", err, retries)
+		klog.V(2).Infof("Unexpected error discovering Kubernetes version (attempt %v): %v", retries, err)
 		retries++
 		return false, nil
 	})
@@ -229,10 +238,10 @@ func createApiserverClient(apiserverHost, kubeConfig string) (*kubernetes.Client
 
 	// this should not happen, warn the user
 	if retries > 0 {
-		glog.Warningf("Initial connection to the Kubernetes API server was retried %d times.", retries)
+		klog.Warningf("Initial connection to the Kubernetes API server was retried %d times.", retries)
 	}
 
-	glog.Infof("Running in Kubernetes cluster version v%v.%v (%v) - git (%v) commit %v - platform %v",
+	klog.Infof("Running in Kubernetes cluster version v%v.%v (%v) - git (%v) commit %v - platform %v",
 		v.Major, v.Minor, v.GitVersion, v.GitTreeState, v.GitCommit, v.Platform)
 
 	return client, nil
@@ -240,7 +249,7 @@ func createApiserverClient(apiserverHost, kubeConfig string) (*kubernetes.Client
 
 // Handler for fatal init errors. Prints a verbose error message and exits.
 func handleFatalInitError(err error) {
-	glog.Fatalf("Error while initiating a connection to the Kubernetes API server. "+
+	klog.Fatalf("Error while initiating a connection to the Kubernetes API server. "+
 		"This could mean the cluster is misconfigured (e.g. it has invalid API server certificates "+
 		"or Service Accounts configuration). Reason: %s\n"+
 		"Refer to the troubleshooting guide for more information: "+
@@ -258,7 +267,7 @@ func registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/stop", func(w http.ResponseWriter, r *http.Request) {
 		err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 		if err != nil {
-			glog.Errorf("Unexpected error: %v", err)
+			klog.Errorf("Unexpected error: %v", err)
 		}
 	})
 }
@@ -304,5 +313,5 @@ func startHTTPServer(port int, mux *http.ServeMux) {
 		WriteTimeout:      300 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	glog.Fatal(server.ListenAndServe())
+	klog.Fatal(server.ListenAndServe())
 }

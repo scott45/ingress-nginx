@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
 	"github.com/mitchellh/hashstructure"
 	"github.com/mitchellh/mapstructure"
@@ -41,6 +41,9 @@ const (
 	proxyRealIPCIDR          = "proxy-real-ip-cidr"
 	bindAddress              = "bind-address"
 	httpRedirectCode         = "http-redirect-code"
+	blockCIDRs               = "block-cidrs"
+	blockUserAgents          = "block-user-agents"
+	blockReferers            = "block-referers"
 	proxyStreamResponses     = "proxy-stream-responses"
 	hideHeaders              = "hide-headers"
 	nginxStatusIpv4Whitelist = "nginx-status-ipv4-whitelist"
@@ -71,12 +74,16 @@ func ReadConfig(src map[string]string) config.Configuration {
 	bindAddressIpv4List := make([]string, 0)
 	bindAddressIpv6List := make([]string, 0)
 
+	blockCIDRList := make([]string, 0)
+	blockUserAgentList := make([]string, 0)
+	blockRefererList := make([]string, 0)
+
 	if val, ok := conf[customHTTPErrors]; ok {
 		delete(conf, customHTTPErrors)
 		for _, i := range strings.Split(val, ",") {
 			j, err := strconv.Atoi(i)
 			if err != nil {
-				glog.Warningf("%v is not a valid http code: %v", i, err)
+				klog.Warningf("%v is not a valid http code: %v", i, err)
 			} else {
 				errors = append(errors, j)
 			}
@@ -111,21 +118,34 @@ func ReadConfig(src map[string]string) config.Configuration {
 					bindAddressIpv4List = append(bindAddressIpv4List, fmt.Sprintf("%v", ns))
 				}
 			} else {
-				glog.Warningf("%v is not a valid textual representation of an IP address", i)
+				klog.Warningf("%v is not a valid textual representation of an IP address", i)
 			}
 		}
+	}
+
+	if val, ok := conf[blockCIDRs]; ok {
+		delete(conf, blockCIDRs)
+		blockCIDRList = strings.Split(val, ",")
+	}
+	if val, ok := conf[blockUserAgents]; ok {
+		delete(conf, blockUserAgents)
+		blockUserAgentList = strings.Split(val, ",")
+	}
+	if val, ok := conf[blockReferers]; ok {
+		delete(conf, blockReferers)
+		blockRefererList = strings.Split(val, ",")
 	}
 
 	if val, ok := conf[httpRedirectCode]; ok {
 		delete(conf, httpRedirectCode)
 		j, err := strconv.Atoi(val)
 		if err != nil {
-			glog.Warningf("%v is not a valid HTTP code: %v", val, err)
+			klog.Warningf("%v is not a valid HTTP code: %v", val, err)
 		} else {
 			if validRedirectCodes.Has(j) {
 				to.HTTPRedirectCode = j
 			} else {
-				glog.Warningf("The code %v is not a valid as HTTP redirect code. Using the default.", val)
+				klog.Warningf("The code %v is not a valid as HTTP redirect code. Using the default.", val)
 			}
 		}
 	}
@@ -135,7 +155,7 @@ func ReadConfig(src map[string]string) config.Configuration {
 		delete(conf, proxyHeaderTimeout)
 		duration, err := time.ParseDuration(val)
 		if err != nil {
-			glog.Warningf("proxy-protocol-header-timeout of %v encountered an error while being parsed %v. Switching to use default value instead.", val, err)
+			klog.Warningf("proxy-protocol-header-timeout of %v encountered an error while being parsed %v. Switching to use default value instead.", val, err)
 		} else {
 			to.ProxyProtocolHeaderTimeout = duration
 		}
@@ -146,13 +166,13 @@ func ReadConfig(src map[string]string) config.Configuration {
 		delete(conf, proxyStreamResponses)
 		j, err := strconv.Atoi(val)
 		if err != nil {
-			glog.Warningf("%v is not a valid number: %v", val, err)
+			klog.Warningf("%v is not a valid number: %v", val, err)
 		} else {
 			streamResponses = j
 		}
 	}
 
-	// Nginx Status whitlelist
+	// Nginx Status whitelist
 	if val, ok := conf[nginxStatusIpv4Whitelist]; ok {
 		whitelist := make([]string, 0)
 		whitelist = append(whitelist, strings.Split(val, ",")...)
@@ -184,6 +204,9 @@ func ReadConfig(src map[string]string) config.Configuration {
 	to.ProxyRealIPCIDR = proxyList
 	to.BindAddressIpv4 = bindAddressIpv4List
 	to.BindAddressIpv6 = bindAddressIpv6List
+	to.BlockCIDRs = blockCIDRList
+	to.BlockUserAgents = blockUserAgentList
+	to.BlockReferers = blockRefererList
 	to.HideHeaders = hideHeadersList
 	to.ProxyStreamResponses = streamResponses
 	to.DisableIpv6DNS = !ing_net.IsIPv6Enabled()
@@ -197,18 +220,18 @@ func ReadConfig(src map[string]string) config.Configuration {
 
 	decoder, err := mapstructure.NewDecoder(config)
 	if err != nil {
-		glog.Warningf("unexpected error merging defaults: %v", err)
+		klog.Warningf("unexpected error merging defaults: %v", err)
 	}
 	err = decoder.Decode(conf)
 	if err != nil {
-		glog.Warningf("unexpected error merging defaults: %v", err)
+		klog.Warningf("unexpected error merging defaults: %v", err)
 	}
 
 	hash, err := hashstructure.Hash(to, &hashstructure.HashOptions{
 		TagName: "json",
 	})
 	if err != nil {
-		glog.Warningf("unexpected error obtaining hash: %v", err)
+		klog.Warningf("unexpected error obtaining hash: %v", err)
 	}
 
 	to.Checksum = fmt.Sprintf("%v", hash)
@@ -222,7 +245,7 @@ func filterErrors(codes []int) []int {
 		if code > 299 && code < 600 {
 			fa = append(fa, code)
 		} else {
-			glog.Warningf("error code %v is not valid for custom error pages", code)
+			klog.Warningf("error code %v is not valid for custom error pages", code)
 		}
 	}
 

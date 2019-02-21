@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
 	apiv1 "k8s.io/api/core/v1"
 
@@ -76,9 +76,6 @@ const (
 	// http://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_session_cache
 	sslSessionCacheSize = "10m"
 
-	// Default setting for load balancer algorithm
-	defaultLoadBalancerAlgorithm = ""
-
 	// Parameters for a shared memory zone that will keep states for various keys.
 	// http://nginx.org/en/docs/http/ngx_http_limit_conn_module.html#limit_conn_zone
 	defaultLimitConnZoneVariable = "$binary_remote_addr"
@@ -97,15 +94,20 @@ type Configuration struct {
 	// By default this is disabled
 	AllowBackendServerHeader bool `json:"allow-backend-server-header"`
 
+	// AccessLogParams sets additionals params for access_log
+	// http://nginx.org/en/docs/http/ngx_http_log_module.html#access_log
+	// By default it's empty
+	AccessLogParams string `json:"access-log-params,omitempty"`
+
 	// AccessLogPath sets the path of the access logs if enabled
 	// http://nginx.org/en/docs/http/ngx_http_log_module.html#access_log
 	// By default access logs go to /var/log/nginx/access.log
 	AccessLogPath string `json:"access-log-path,omitempty"`
 
-	// WorkerCpuAffinity bind nginx worker processes to CPUs this will improve response latency
+	// WorkerCPUAffinity bind nginx worker processes to CPUs this will improve response latency
 	// http://nginx.org/en/docs/ngx_core_module.html#worker_cpu_affinity
 	// By default this is disabled
-	WorkerCpuAffinity string `json:"worker-cpu-affinity,omitempty"`
+	WorkerCPUAffinity string `json:"worker-cpu-affinity,omitempty"`
 	// ErrorLogPath sets the path of the error logs
 	// http://nginx.org/en/docs/ngx_core_module.html#error_log
 	// By default error logs go to /var/log/nginx/error.log
@@ -120,7 +122,7 @@ type Configuration struct {
 	// By default this is disabled
 	EnableModsecurity bool `json:"enable-modsecurity"`
 
-	// EnableModsecurity enables the OWASP ModSecurity Core Rule Set (CRS)
+	// EnableOWASPCoreRules enables the OWASP ModSecurity Core Rule Set (CRS)
 	// By default this is disabled
 	EnableOWASPCoreRules bool `json:"enable-owasp-modsecurity-crs"`
 
@@ -238,6 +240,10 @@ type Configuration struct {
 	// http://nginx.org/en/docs/ngx_core_module.html#worker_connections
 	MaxWorkerConnections int `json:"max-worker-connections,omitempty"`
 
+	// Maximum number of files that can be opened by each worker process.
+	// http://nginx.org/en/docs/ngx_core_module.html#worker_rlimit_nofile
+	MaxWorkerOpenFiles int `json:"max-worker-open-files,omitempty"`
+
 	// Sets the bucket size for the map variables hash tables.
 	// Default value depends on the processor’s cache line size.
 	// http://nginx.org/en/docs/http/ngx_http_map_module.html#map_hash_bucket_size
@@ -347,6 +353,10 @@ type Configuration struct {
 	// http://nginx.org/en/docs/http/ngx_http_geoip_module.html
 	UseGeoIP bool `json:"use-geoip,omitempty"`
 
+	// UseGeoIP2 enables the geoip2 module for NGINX
+	// By default this is disabled
+	UseGeoIP2 bool `json:"use-geoip2,omitempty"`
+
 	// Enables or disables the use of the NGINX Brotli Module for compression
 	// https://github.com/google/ngx_brotli
 	EnableBrotli bool `json:"enable-brotli,omitempty"`
@@ -377,9 +387,6 @@ type Configuration struct {
 	// http://nginx.org/en/docs/ngx_core_module.html#worker_shutdown_timeout
 	WorkerShutdownTimeout string `json:"worker-shutdown-timeout,omitempty"`
 
-	// Defines the load balancing algorithm to use. The deault is round-robin
-	LoadBalanceAlgorithm string `json:"load-balance,omitempty"`
-
 	// Sets the bucket size for the variables hash table.
 	// http://nginx.org/en/docs/http/ngx_http_map_module.html#variables_hash_bucket_size
 	VariablesHashBucketSize int `json:"variables-hash-bucket-size,omitempty"`
@@ -393,8 +400,16 @@ type Configuration struct {
 	// upstream servers that are preserved in the cache of each worker process. When this
 	// number is exceeded, the least recently used connections are closed.
 	// http://nginx.org/en/docs/http/ngx_http_upstream_module.html#keepalive
-	// Default: 32
 	UpstreamKeepaliveConnections int `json:"upstream-keepalive-connections,omitempty"`
+
+	// Sets a timeout during which an idle keepalive connection to an upstream server will stay open.
+	// http://nginx.org/en/docs/http/ngx_http_upstream_module.html#keepalive_timeout
+	UpstreamKeepaliveTimeout int `json:"upstream-keepalive-timeout,omitempty"`
+
+	// Sets the maximum number of requests that can be served through one keepalive connection.
+	// After the maximum number of requests is made, the connection is closed.
+	// http://nginx.org/en/docs/http/ngx_http_upstream_module.html#keepalive_requests
+	UpstreamKeepaliveRequests int `json:"upstream-keepalive-requests,omitempty"`
 
 	// Sets the maximum size of the variables hash table.
 	// http://nginx.org/en/docs/http/ngx_http_map_module.html#variables_hash_max_size
@@ -430,14 +445,14 @@ type Configuration struct {
 
 	// If the request does not have a request-id, should we generate a random value?
 	// Default: true
-	GenerateRequestId bool `json:"generate-request-id,omitempty"`
+	GenerateRequestID bool `json:"generate-request-id,omitempty"`
 
 	// Adds an X-Original-Uri header with the original request URI to the backend request
 	// Default: true
-	ProxyAddOriginalUriHeader bool `json:"proxy-add-original-uri-header"`
+	ProxyAddOriginalURIHeader bool `json:"proxy-add-original-uri-header"`
 
 	// EnableOpentracing enables the nginx Opentracing extension
-	// https://github.com/rnburn/nginx-opentracing
+	// https://github.com/opentracing-contrib/nginx-opentracing
 	// By default this is disabled
 	EnableOpentracing bool `json:"enable-opentracing"`
 
@@ -445,6 +460,7 @@ type Configuration struct {
 	ZipkinCollectorHost string `json:"zipkin-collector-host"`
 
 	// ZipkinCollectorPort specifies the port to use when uploading traces
+	// Default: 9411
 	ZipkinCollectorPort int `json:"zipkin-collector-port"`
 
 	// ZipkinServiceName specifies the service name to use for any traces created
@@ -459,6 +475,7 @@ type Configuration struct {
 	JaegerCollectorHost string `json:"jaeger-collector-host"`
 
 	// JaegerCollectorPort specifies the port to use when uploading traces
+	// Default: 6831
 	JaegerCollectorPort int `json:"jaeger-collector-port"`
 
 	// JaegerServiceName specifies the service name to use for any traces created
@@ -473,6 +490,21 @@ type Configuration struct {
 	// JaegerSamplerParam specifies the argument to be passed to the sampler constructor
 	// Default: 1
 	JaegerSamplerParam string `json:"jaeger-sampler-param"`
+
+	// DatadogCollectorHost specifies the datadog agent host to use when uploading traces
+	DatadogCollectorHost string `json:"datadog-collector-host"`
+
+	// DatadogCollectorPort specifies the port to use when uploading traces
+	// Default: 8126
+	DatadogCollectorPort int `json:"datadog-collector-port"`
+
+	// DatadogServiceName specifies the service name to use for any traces created
+	// Default: nginx
+	DatadogServiceName string `json:"datadog-service-name"`
+
+	// DatadogOperationNameOverride overrides the operation naem to use for any traces crated
+	// Default: nginx.handle
+	DatadogOperationNameOverride string `json:"datadog-operation-name-override"`
 
 	// MainSnippet adds custom configuration to the main section of the nginx configuration
 	MainSnippet string `json:"main-snippet"`
@@ -507,6 +539,11 @@ type Configuration struct {
 	// Default: 503
 	LimitReqStatusCode int `json:"limit-req-status-code"`
 
+	// LimitConnStatusCode Sets the status code to return in response to rejected connections.
+	// http://nginx.org/en/docs/http/ngx_http_limit_conn_module.html#limit_conn_status
+	// Default: 503
+	LimitConnStatusCode int `json:"limit-conn-status-code"`
+
 	// EnableSyslog enables the configuration for remote logging in NGINX
 	EnableSyslog bool `json:"enable-syslog"`
 	// SyslogHost FQDN or IP address where the logs should be sent
@@ -533,12 +570,22 @@ type Configuration struct {
 
 	// Checksum contains a checksum of the configmap configuration
 	Checksum string `json:"-"`
+
+	// Block all requests from given IPs
+	BlockCIDRs []string `json:"block-cidrs"`
+
+	// Block all requests with given User-Agent headers
+	BlockUserAgents []string `json:"block-user-agents"`
+
+	// Block all requests with given Referer headers
+	BlockReferers []string `json:"block-referers"`
 }
 
 // NewDefault returns the default nginx configuration
 func NewDefault() Configuration {
 	defIPCIDR := make([]string, 0)
 	defBindAddress := make([]string, 0)
+	defBlockEntity := make([]string, 0)
 	defNginxStatusIpv4Whitelist := make([]string, 0)
 	defNginxStatusIpv6Whitelist := make([]string, 0)
 
@@ -550,8 +597,12 @@ func NewDefault() Configuration {
 	cfg := Configuration{
 		AllowBackendServerHeader:   false,
 		AccessLogPath:              "/var/log/nginx/access.log",
-		WorkerCpuAffinity:          "",
+		AccessLogParams:            "",
+		WorkerCPUAffinity:          "",
 		ErrorLogPath:               "/var/log/nginx/error.log",
+		BlockCIDRs:                 defBlockEntity,
+		BlockUserAgents:            defBlockEntity,
+		BlockReferers:              defBlockEntity,
 		BrotliLevel:                4,
 		BrotliTypes:                brotliTypes,
 		ClientHeaderBufferSize:     "1k",
@@ -561,11 +612,11 @@ func NewDefault() Configuration {
 		EnableDynamicTLSRecords:    true,
 		EnableUnderscoresInHeaders: false,
 		ErrorLogLevel:              errorLevel,
-		UseForwardedHeaders:        true,
+		UseForwardedHeaders:        false,
 		ForwardedForHeader:         "X-Forwarded-For",
 		ComputeFullForwardedFor:    false,
-		ProxyAddOriginalUriHeader:  true,
-		GenerateRequestId:          true,
+		ProxyAddOriginalURIHeader:  true,
+		GenerateRequestID:          true,
 		HTTP2MaxFieldSize:          "4k",
 		HTTP2MaxHeaderSize:         "16k",
 		HTTP2MaxRequests:           1000,
@@ -585,6 +636,7 @@ func NewDefault() Configuration {
 		LogFormatUpstream:          logFormatUpstream,
 		EnableMultiAccept:          true,
 		MaxWorkerConnections:       16384,
+		MaxWorkerOpenFiles:         0,
 		MapHashBucketSize:          64,
 		NginxStatusIpv4Whitelist:   defNginxStatusIpv4Whitelist,
 		NginxStatusIpv6Whitelist:   defNginxStatusIpv6Whitelist,
@@ -607,9 +659,9 @@ func NewDefault() Configuration {
 		EnableBrotli:               false,
 		UseGzip:                    true,
 		UseGeoIP:                   true,
+		UseGeoIP2:                  false,
 		WorkerProcesses:            strconv.Itoa(runtime.NumCPU()),
 		WorkerShutdownTimeout:      "10s",
-		LoadBalanceAlgorithm:       defaultLoadBalancerAlgorithm,
 		VariablesHashBucketSize:    128,
 		VariablesHashMaxSize:       2048,
 		UseHTTP2:                   true,
@@ -636,6 +688,8 @@ func NewDefault() Configuration {
 			ProxyBuffering:         "off",
 		},
 		UpstreamKeepaliveConnections: 32,
+		UpstreamKeepaliveTimeout:     60,
+		UpstreamKeepaliveRequests:    100,
 		LimitConnZoneVariable:        defaultLimitConnZoneVariable,
 		BindAddressIpv4:              defBindAddress,
 		BindAddressIpv6:              defBindAddress,
@@ -646,13 +700,17 @@ func NewDefault() Configuration {
 		JaegerServiceName:            "nginx",
 		JaegerSamplerType:            "const",
 		JaegerSamplerParam:           "1",
+		DatadogServiceName:           "nginx",
+		DatadogCollectorPort:         8126,
+		DatadogOperationNameOverride: "nginx.handle",
 		LimitReqStatusCode:           503,
+		LimitConnStatusCode:          503,
 		SyslogPort:                   514,
 		NoTLSRedirectLocations:       "/.well-known/acme-challenge",
 		NoAuthLocations:              "/.well-known/acme-challenge",
 	}
 
-	if glog.V(5) {
+	if klog.V(5) {
 		cfg.ErrorLogLevel = "debug"
 	}
 
@@ -672,28 +730,30 @@ func (cfg Configuration) BuildLogFormatUpstream() string {
 
 // TemplateConfig contains the nginx configuration to render the file nginx.conf
 type TemplateConfig struct {
-	ProxySetHeaders             map[string]string
-	AddHeaders                  map[string]string
-	MaxOpenFiles                int
-	BacklogSize                 int
-	Backends                    []*ingress.Backend
-	PassthroughBackends         []*ingress.SSLPassthroughBackend
-	Servers                     []*ingress.Server
-	TCPBackends                 []ingress.L4Service
-	UDPBackends                 []ingress.L4Service
-	HealthzURI                  string
-	CustomErrors                bool
-	Cfg                         Configuration
-	IsIPV6Enabled               bool
-	IsSSLPassthroughEnabled     bool
-	NginxStatusIpv4Whitelist    []string
-	NginxStatusIpv6Whitelist    []string
-	RedirectServers             map[string]string
-	ListenPorts                 *ListenPorts
-	PublishService              *apiv1.Service
-	DynamicConfigurationEnabled bool
-	DynamicCertificatesEnabled  bool
-	DisableLua                  bool
+	ProxySetHeaders            map[string]string
+	AddHeaders                 map[string]string
+	BacklogSize                int
+	Backends                   []*ingress.Backend
+	PassthroughBackends        []*ingress.SSLPassthroughBackend
+	Servers                    []*ingress.Server
+	TCPBackends                []ingress.L4Service
+	UDPBackends                []ingress.L4Service
+	HealthzURI                 string
+	Cfg                        Configuration
+	IsIPV6Enabled              bool
+	IsSSLPassthroughEnabled    bool
+	NginxStatusIpv4Whitelist   []string
+	NginxStatusIpv6Whitelist   []string
+	RedirectServers            interface{}
+	ListenPorts                *ListenPorts
+	PublishService             *apiv1.Service
+	DynamicCertificatesEnabled bool
+	EnableMetrics              bool
+
+	PID          string
+	StatusSocket string
+	StatusPath   string
+	StreamSocket string
 }
 
 // ListenPorts describe the ports required to run the
@@ -701,7 +761,6 @@ type TemplateConfig struct {
 type ListenPorts struct {
 	HTTP     int
 	HTTPS    int
-	Status   int
 	Health   int
 	Default  int
 	SSLProxy int

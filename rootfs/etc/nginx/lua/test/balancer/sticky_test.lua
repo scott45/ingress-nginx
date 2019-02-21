@@ -40,13 +40,13 @@ end
 
 describe("Sticky", function()
   before_each(function()
-    mock_ngx({ var = {} })
+    mock_ngx({ var = { location_path = "/", host = "test.com" } })
   end)
 
   after_each(function()
     reset_ngx()
   end)
-  
+
   local test_backend = get_test_backend()
   local test_backend_endpoint= test_backend.endpoints[1].address .. ":" .. test_backend.endpoints[1].port
 
@@ -55,7 +55,7 @@ describe("Sticky", function()
       it("returns an instance containing the corresponding cookie name", function()
         local sticky_balancer_instance = sticky:new(test_backend)
         local test_backend_cookie_name = test_backend.sessionAffinityConfig.cookieSessionAffinity.name
-        assert.equal(sticky_balancer_instance.cookie_name, test_backend_cookie_name)
+        assert.equal(sticky_balancer_instance:cookie_name(), test_backend_cookie_name)
       end)
     end)
 
@@ -65,10 +65,10 @@ describe("Sticky", function()
         temp_backend.sessionAffinityConfig.cookieSessionAffinity.name = nil
         local sticky_balancer_instance = sticky:new(temp_backend)
         local default_cookie_name = "route"
-        assert.equal(sticky_balancer_instance.cookie_name, default_cookie_name)
+        assert.equal(sticky_balancer_instance:cookie_name(), default_cookie_name)
       end)
     end)
-        
+
     context("when backend specifies hash function", function()
       it("returns an instance with the corresponding hash implementation", function()
         local sticky_balancer_instance = sticky:new(test_backend)
@@ -102,41 +102,107 @@ describe("Sticky", function()
       cookie.new = mocked_cookie_new
     end)
 
-    context("when client doesn't have a cookie set", function()
+    context("when client doesn't have a cookie set and location is in cookie_locations", function()
       it("picks an endpoint for the client", function()
         local sticky_balancer_instance = sticky:new(test_backend)
         local peer = sticky_balancer_instance:balance()
         assert.equal(peer, test_backend_endpoint)
       end)
 
-      it("sets a cookie on the client", function() 
+      it("sets a cookie on the client", function()
         local s = {}
         cookie.new = function(self)
           local test_backend_hash_fn = test_backend.sessionAffinityConfig.cookieSessionAffinity.hash
           local cookie_instance = {
             set = function(self, payload)
               assert.equal(payload.key, test_backend.sessionAffinityConfig.cookieSessionAffinity.name)
-              assert.equal(payload.value, util[test_backend_hash_fn .. "_digest"](test_backend_endpoint))
-              assert.equal(payload.path, "/")
+              local expected_len = #util[test_backend_hash_fn .. "_digest"]("anything")
+              assert.equal(#payload.value, expected_len)
+              assert.equal(payload.path, ngx.var.location_path)
               assert.equal(payload.domain, nil)
               assert.equal(payload.httponly, true)
-              return true, nil 
+              assert.equal(payload.secure, false)
+              return true, nil
             end,
             get = function(k) return false end,
           }
           s = spy.on(cookie_instance, "set")
           return cookie_instance, false
         end
-        local sticky_balancer_instance = sticky:new(get_test_backend())
+        local b = get_test_backend()
+        b.sessionAffinityConfig.cookieSessionAffinity.locations = {}
+        b.sessionAffinityConfig.cookieSessionAffinity.locations["test.com"] = {"/"}
+        local sticky_balancer_instance = sticky:new(b)
         assert.has_no.errors(function() sticky_balancer_instance:balance() end)
         assert.spy(s).was_called()
+      end)
+
+      it("sets a secure cookie on the client when being in ssl mode", function()
+        ngx.var.https = "on"
+        local s = {}
+        cookie.new = function(self)
+          local test_backend_hash_fn = test_backend.sessionAffinityConfig.cookieSessionAffinity.hash
+          local cookie_instance = {
+            set = function(self, payload)
+              assert.equal(payload.key, test_backend.sessionAffinityConfig.cookieSessionAffinity.name)
+              local expected_len = #util[test_backend_hash_fn .. "_digest"]("anything")
+              assert.equal(#payload.value, expected_len)
+              assert.equal(payload.path, ngx.var.location_path)
+              assert.equal(payload.domain, nil)
+              assert.equal(payload.httponly, true)
+              assert.equal(payload.secure, true)
+              return true, nil
+            end,
+            get = function(k) return false end,
+          }
+          s = spy.on(cookie_instance, "set")
+          return cookie_instance, false
+        end
+        local b = get_test_backend()
+        b.sessionAffinityConfig.cookieSessionAffinity.locations = {}
+        b.sessionAffinityConfig.cookieSessionAffinity.locations["test.com"] = {"/"}
+        local sticky_balancer_instance = sticky:new(b)
+        assert.has_no.errors(function() sticky_balancer_instance:balance() end)
+        assert.spy(s).was_called()
+      end)
+    end)
+
+    context("when client doesn't have a cookie set and location not in cookie_locations", function()
+      it("picks an endpoint for the client", function()
+        local sticky_balancer_instance = sticky:new(test_backend)
+        local peer = sticky_balancer_instance:balance()
+        assert.equal(peer, test_backend_endpoint)
+      end)
+
+      it("does not set a cookie on the client", function()
+        local s = {}
+        cookie.new = function(self)
+          local test_backend_hash_fn = test_backend.sessionAffinityConfig.cookieSessionAffinity.hash
+          local cookie_instance = {
+            set = function(self, payload)
+              assert.equal(payload.key, test_backend.sessionAffinityConfig.cookieSessionAffinity.name)
+              local expected_len = #util[test_backend_hash_fn .. "_digest"]("anything")
+              assert.equal(#payload.value, expected_len)
+              assert.equal(payload.path, ngx.var.location_path)
+              assert.equal(payload.domain, ngx.var.host)
+              assert.equal(payload.httponly, true)
+              return true, nil
+            end,
+            get = function(k) return false end,
+          }
+          s = spy.on(cookie_instance, "set")
+          return cookie_instance, false
+        end
+        local sticky_balancer_instance = sticky:new(get_test_backend())        
+        assert.has_no.errors(function() sticky_balancer_instance:balance() end)
+        assert.spy(s).was_not_called()
       end)
     end)
 
     context("when client has a cookie set", function()
       it("does not set a cookie", function()
         local s = {}
-        cookie.new = function(self) 
+        cookie.new = function(self)
           local return_obj = {
             set = function(v) return false, nil end,
             get = function(k) return test_backend_endpoint end,
